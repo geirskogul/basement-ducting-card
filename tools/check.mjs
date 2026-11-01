@@ -1,6 +1,6 @@
 // Checks of the colouring rules (node tools/check.mjs); run in CI.
 import assert from "node:assert/strict";
-import { normalise, paint, renderStatic, along, colour, valueAt, indexAt, celsius } from "../basement-ducting-card.js";
+import { normalise, paint, renderStatic, along, colour, valueAt, indexAt, celsius, cyclePeaks, hoodEstimate } from "../basement-ducting-card.js";
 
 const R = (left, right, extra = {}) => ({
   left: { inside: null, outside: null, phase: null, wye: null, outlet: null, ...left },
@@ -61,5 +61,24 @@ assert.ok(!renderStatic({ title: "<script>x</script>" }, {}).includes("<script>"
   assert.equal(celsius("unavailable", "°C"), null);
   const c = normalise({});
   assert.equal(c.replay, true); assert.equal(c.replay_hours, 1.5); assert.equal(c.replay_speed, 120);
+}
+// The hood without a sensor: cycle peaks, fading from the previous peak to this one, holding after the last.
+{
+  const m = (x) => x * 60000;
+  const ph = (pairs) => pairs.map(([t, v]) => [m(t), v]);
+  const left = { phase: ph([[-8, "intake"], [0, "exhaust"], [8, "intake"], [16, "exhaust"], [24, "intake"], [32, "exhaust"], [40, "intake"]]),
+                 inside: ph([[-8, 15], [0, 30], [8, 15], [16, 32], [24, 15], [32, 31], [40, 15]]) };
+  const right = { phase: ph([[-8, "exhaust"], [0, "intake"], [8, "exhaust"], [16, "intake"], [24, "exhaust"], [32, "intake"], [40, "exhaust"]]),
+                  inside: ph([[-8, 39], [0, 15], [8, 40], [16, 15], [24, 44], [32, 15], [40, 50]]) };
+  const cycles = cyclePeaks(left.phase, [left, right]);
+  assert.deepEqual(cycles.map((c) => [c.start / 60000, c.end / 60000, c.peak]), [[0, 16, 40], [16, 32, 44]]);
+  assert.equal(hoodEstimate(cycles, m(-4)), null);   // before the first complete cycle
+  assert.equal(hoodEstimate(cycles, m(8)), 40);      // first cycle: no previous peak, its own
+  assert.equal(hoodEstimate(cycles, m(16)), 40);     // a cycle starts at the previous peak...
+  assert.equal(hoodEstimate(cycles, m(24)), 42);     // ...and fades to its own
+  assert.equal(hoodEstimate(cycles, m(45)), 44);     // the cycle under way: hold the last known peak
+  // An estimate from the cycles is used before the probes' own estimate, with the * mark.
+  const p = paint(normalise({}), R({ inside: 20, phase: "exhaust" }, { inside: 25, phase: "intake" }, { hood_estimate: 43 }));
+  assert.equal(p.texts["t-hood"], "43.0 °C*");
 }
 console.log("all checks passed");

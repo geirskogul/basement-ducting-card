@@ -7,7 +7,7 @@
 //
 // The same render function also runs in Node (tools/render.mjs) to make a static picture.
 
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 // The temperature scale (°C, colour) of the recuperator integration's diagram, after the U.S. National Weather
 // Service temperature maps.
@@ -143,13 +143,14 @@ export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
     if (!typical && inn && has(wye)) m.sup = known(u.outlet, wye);
     state[s] = { u, m, ex, inn, wye };
   }
-  // The hood: its own sensor, else the hood wye's, else estimated from the inside probes of the units drawing from
-  // it (exhausting now, else at their last exhaust); any inside probe only as a last resort.
+  // The hood: its own sensor, else the hood wye's, else estimated: from the cycle peaks (r.hood_estimate, see
+  // hoodEstimate), else from the inside probes of the units drawing from it (exhausting now, else at their last
+  // exhaust); any inside probe only as a last resort.
   const estimated = !has(r.hood) && !has(r.hood_wye);
   const max = (xs) => (xs.length ? Math.max(...xs) : null);
   const exhausting = SIDES.filter((s) => state[s].ex).map((s) => r[s].inside).filter(has);
   const remembered = SIDES.map((s) => state[s].m.exIn).filter(has);
-  const hood = known(r.hood, r.hood_wye, max(exhausting), max(remembered), max(SIDES.map((s) => r[s].inside).filter(has)));
+  const hood = known(r.hood, r.hood_wye, r.hood_estimate, max(exhausting), max(remembered), max(SIDES.map((s) => r[s].inside).filter(has)));
   const hoodWye = known(r.hood_wye, hood);
   const room = r.room;
 
@@ -446,6 +447,49 @@ export function valueAt(series, t) {
   return i < 0 ? null : series[i][1];
 }
 
+/**
+ * The breathing cycles in a stretch of history and each one's peak hood temperature.
+ * A cycle runs from one start of the lead unit's exhaust to the next; its peak is the highest inside-probe reading
+ * of a unit while that unit exhausts (the warmest hood air the probes saw).
+ * lead: phase series of the lead unit; sides: [{ phase, inside }] series per unit (inside already in °C).
+ * Returns [{ start, end, peak }] for the complete cycles, oldest first.
+ */
+export function cyclePeaks(lead, sides) {
+  const starts = [];
+  for (let i = 0; i < (lead?.length ?? 0); i++) {
+    if (lead[i][1] === "exhaust" && (i === 0 ? false : lead[i - 1][1] !== "exhaust")) starts.push(lead[i][0]);
+  }
+  const cycles = [];
+  for (let k = 0; k + 1 < starts.length; k++) {
+    const a = starts[k], b = starts[k + 1];
+    let peak = null;
+    for (const { phase, inside } of sides) {
+      if (!phase || !inside) continue;
+      for (let i = Math.max(0, indexAt(inside, a)); i < inside.length && inside[i][0] < b; i++) {
+        const v = inside[i][1];
+        if (has(v) && valueAt(phase, Math.max(inside[i][0], a)) === "exhaust" && (peak === null || v > peak)) peak = v;
+      }
+    }
+    if (peak !== null) cycles.push({ start: a, end: b, peak });
+  }
+  return cycles;
+}
+
+/**
+ * The hood temperature at time t from the cycle peaks: during a complete cycle it fades from the previous cycle's
+ * peak (at its start) to its own (at its end); after the last complete cycle, where the next peak is not known yet,
+ * it stays at that last peak. null if there is no complete cycle at or before t.
+ */
+export function hoodEstimate(cycles, t) {
+  let k = -1;
+  for (let i = 0; i < cycles.length && cycles[i].start <= t; i++) k = i;
+  if (k < 0) return null;
+  const c = cycles[k];
+  if (t >= c.end) return c.peak; // no complete cycle after this one yet: hold its peak
+  const from = k > 0 ? cycles[k - 1].peak : c.peak;
+  return from + ((c.peak - from) * (t - c.start)) / (c.end - c.start);
+}
+
 function reading(hass, entity) {
   if (!entity) return null;
   const s = hass.states[entity];
@@ -465,6 +509,23 @@ function readAll(hass, cfg) {
   const rooms = cfg.room.map((e) => reading(hass, e)).filter((x) => x !== null);
   r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
   return r;
+}
+
+/** history/history_during_period's answer as { entity: [[ms, state], ...] }, sorted by time. */
+function toSeries(res) {
+  const series = {};
+  for (const [entity, states] of Object.entries(res || {})) {
+    series[entity] = states.map((x) => [(x.lu ?? x.lc) * 1000, x.s]).filter((x) => !Number.isNaN(x[0])).sort((a, b) => a[0] - b[0]);
+  }
+  return series;
+}
+
+/** Per unit: its phase series and its inside probe series in °C, for cyclePeaks. */
+function sideSeries(cfg, series, units) {
+  return SIDES.map((s) => ({
+    phase: series[cfg[s].phase],
+    inside: (series[cfg[s].inside] || []).map(([t, v]) => [t, celsius(v, units[cfg[s].inside])]),
+  }));
 }
 
 const SPEEDS = [30, 60, 120, 300, 600, 1800];
@@ -532,9 +593,71 @@ class BasementDuctingCard extends BaseElement {
     const seen = [hass.config?.unit_system?.temperature, ...this._entities.map((e) => hass.states[e])];
     if (this._built && this._seen && seen.every((x, i) => x === this._seen[i])) return;
     this._seen = seen;
-    const p = paint(this._cfg, readAll(hass, this._cfg), this._mem, { unit: this._unit(hass) });
-    if (!this._built) this._build(p);
+    const r = readAll(hass, this._cfg);
+    r.hood_estimate = this._trackPeaks(r);
+    const p = paint(this._cfg, r, this._mem, { unit: this._unit(hass) });
+    if (!this._built) {
+      this._build(p);
+      this._seedPeaks();
+    }
     this._apply(p);
+  }
+
+  // ---- The hood without a sensor: the peak of the last complete breathing cycle (see cyclePeaks). Live, the peak
+  // of the cycle under way is not known until it ends, so the hood holds the last one and moves on at each new cycle.
+
+  _estimating() {
+    const c = this._cfg;
+    return !c.hood && !c.hood_wye && !!(c.left.phase || c.right.phase);
+  }
+
+  _lead() { return this._cfg.left.phase ? "left" : "right"; }
+
+  _trackPeaks(r) {
+    const pk = this._pk;
+    if (!pk || !this._estimating()) return null;
+    const lead = r[this._lead()].phase;
+    if (lead === "exhaust" && pk.lead !== undefined && pk.lead !== "exhaust") {
+      if (pk.cur !== null) pk.last = pk.cur; // a new cycle: the one just ended is complete
+      pk.cur = null;
+    }
+    pk.lead = lead;
+    for (const s of SIDES) {
+      const v = r[s].inside;
+      if (r[s].phase === "exhaust" && has(v) && (pk.cur === null || v > pk.cur)) pk.cur = v;
+    }
+    return pk.last;
+  }
+
+  /** Start the live peak tracker from the last two hours of history, so the hood is right from the first moment. */
+  async _seedPeaks() {
+    this._pk = { last: null, cur: null, lead: undefined };
+    if (!this._estimating() || !this._hass?.callWS) return;
+    const c = this._cfg, pk = this._pk, end = new Date(), start = new Date(end.getTime() - 2 * 3600000);
+    const ids = SIDES.flatMap((s) => [c[s].phase, c[s].inside]).filter(Boolean);
+    try {
+      const res = await this._hass.callWS({
+        type: "history/history_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
+        entity_ids: ids, minimal_response: true, no_attributes: true, significant_changes_only: false,
+      });
+      if (this._pk !== pk) return; // rebuilt meanwhile
+      const series = toSeries(res);
+      const units = Object.fromEntries(ids.map((e) => [e, this._hass.states[e]?.attributes?.unit_of_measurement]));
+      const cycles = cyclePeaks(series[c[this._lead()].phase], sideSeries(c, series, units));
+      const last = cycles[cycles.length - 1];
+      pk.last = last ? last.peak : null;
+      // The cycle under way: its highest exhausting reading so far.
+      const since = last ? last.end : start.getTime();
+      for (const { phase, inside } of sideSeries(c, series, units)) {
+        for (const [t, v] of inside || []) {
+          if (t >= since && has(v) && valueAt(phase, t) === "exhaust" && (pk.cur === null || v > pk.cur)) pk.cur = v;
+        }
+      }
+      pk.lead = this._hass.states[c[this._lead()].phase]?.state;
+      if (!this._rp) { this._seen = null; this.hass = this._hass; }
+    } catch (err) {
+      // No history: the hood falls back to the exhausting unit's inside probe.
+    }
   }
 
   _build(p) {
@@ -589,6 +712,7 @@ class BasementDuctingCard extends BaseElement {
     this._svg.classList.toggle("smooth", !!this._cfg.animate);
     this._seen = null;
     if (this._hass) this.hass = this._hass;
+    this._seedPeaks();
   }
 
   async _loadReplay() {
@@ -599,21 +723,20 @@ class BasementDuctingCard extends BaseElement {
     u.msg.textContent = "Loading the history…";
     u.load.disabled = true;
     try {
+      // An hour more on each side, so the first cycle has a previous peak and the last one can be finished.
+      const from = new Date(start.getTime() - 3600000), until = new Date(Math.min(Date.now(), end.getTime() + 3600000));
       const res = await hass.callWS({
-        type: "history/history_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
+        type: "history/history_during_period", start_time: from.toISOString(), end_time: until.toISOString(),
         entity_ids: this._entities, minimal_response: true, no_attributes: true, significant_changes_only: false,
       });
-      const series = {};
-      let points = 0;
-      for (const [entity, states] of Object.entries(res || {})) {
-        series[entity] = states.map((x) => [(x.lu ?? x.lc) * 1000, x.s]).filter((x) => !Number.isNaN(x[0]))
-          .sort((a, b) => a[0] - b[0]);
-        points += series[entity].length;
-      }
+      const series = toSeries(res);
+      const points = Object.values(series).reduce((n, x) => n + x.length, 0);
       if (!points) { u.msg.textContent = "The recorder has no history for these sensors in that period."; return; }
       // Units as the sensors report them now (history requested without attributes).
       const units = Object.fromEntries(this._entities.map((e) => [e, hass.states[e]?.attributes?.unit_of_measurement]));
-      this._rp = { series, units, start: start.getTime(), end: end.getTime(), t: start.getTime(), playing: false, unit: this._unit(hass) };
+      const c = this._cfg;
+      const cycles = this._estimating() ? cyclePeaks(series[c[this._lead()].phase], sideSeries(c, series, units)) : [];
+      this._rp = { series, units, cycles, start: start.getTime(), end: end.getTime(), t: start.getTime(), playing: false, unit: this._unit(hass) };
       this._svg.classList.remove("smooth"); // colours follow the timeline at once
       u.player.hidden = false;
       u.msg.textContent = "";
@@ -669,6 +792,7 @@ class BasementDuctingCard extends BaseElement {
     for (const key of SHARED_SLOTS) r[key] = at(c[key]);
     const rooms = c.room.map(at).filter((x) => x !== null);
     r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
+    r.hood_estimate = rp.cycles.length ? hoodEstimate(rp.cycles, t) : null;
     this._apply(paint(c, r, mem, { unit: rp.unit }));
     const when = new Date(t), span = rp.end - rp.start;
     const label = when.toLocaleString(undefined, span > 20 * 3600000

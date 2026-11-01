@@ -67,7 +67,7 @@ each outlet one (at its end), as drawn.
 | `animate` | `true` | Moving streaks and fading colour changes. `false` keeps the colours and arrows still. Browsers that ask for reduced motion get no movement either way. |
 | `unit` | `auto` | `°C` (or `C`) or `°F` (or `F`) for the readings; `auto` follows Home Assistant's unit system. Sensors in °F or K are converted for the colours. |
 | `left`, `right` | | One block per unit, below. |
-| `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`): the inside probe of a unit that is exhausting (the warmer, if both are), or else of the last unit that did. |
+| `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`) from the breathing cycles; see [The hood without a sensor](#the-hood-without-a-sensor). |
 | `hood_wye` | | Optional sensor in the middle of the hood's wye. The hood then runs from `hood` at the bottom to this at the top, and the hoses start from it. |
 | `heater_intake` | | Optional sensor at the heater's air intake: the bottom of the heater's gradient (the top is the hood). Without it the room temperature is used. |
 | `room` | | Optional room sensor, or a list of them (averaged). Colours an idle outlet without its own sensor and the bottom of the heater when there is no `heater_intake`, and gets its own badge. |
@@ -114,11 +114,28 @@ from the history, so jumping around the timeline shows the same as playing throu
 | Unit's wye | `inside` to `wye` (or `inside` alone). |
 | Hose | Hood wye (or hood) at the hood end. The unit end: while the unit exhausts, its `wye` (or `inside`); otherwise the dampers are shut and the hose keeps that unit's last exhaust reading (the hood's until there is one). |
 | Outlet | While the unit takes air in: the wye's temperature (`wye`, or `inside`) to `outlet` (or the wye's alone). Otherwise `outlet`, or the room, or the last supply reading. |
-| Hood | `hood` to `hood_wye`; with neither, the estimate described under `hood`. |
+| Hood | `hood` to `hood_wye`; with neither, the estimate below. |
 | Hood wye | `hood_wye`, else as the hood. |
 | Heater | `heater_intake` (or the room) at the bottom to the hood at the top. |
 
 A part with a reading at one end only takes that colour; a part with none turns grey.
+
+### The hood without a sensor
+
+With neither `hood` nor `hood_wye`, the hood's temperature comes from the breathing cycles. A cycle runs from one
+start of the left unit's exhaust to the next (the right unit's, if the left has no `phase`); its **peak** is the
+highest inside-probe reading of a unit while that unit exhausts, the warmest hood air the probes saw.
+
+- **Replay:** during each cycle the hood fades from the previous cycle's peak (at its start) to this cycle's peak (at
+  its end). The replay loads an hour more history on each side of the chosen period so that the first and last
+  cycles have their peaks. A cycle that runs into the present has no known peak yet, so the hood stays at the
+  previous one.
+- **Live:** the peak of the cycle under way is not known until it ends, so the hood stays at the last complete
+  cycle's peak and moves to the new one (with the usual fade) as each cycle ends. When the card loads it reads the
+  last two hours of history to know that peak at once.
+
+Without phase sensors or history, the hood falls back to the inside probe of a unit that is exhausting (the warmer,
+if both are), or else of the last unit that did.
 
 ## A static picture
 
