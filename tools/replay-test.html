@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- Replay test with a mock Home Assistant that serves two hours of made-up history: open with
+     chromium --headless=new --no-sandbox --allow-file-access-from-files --virtual-time-budget=4000 --dump-dom "file://$PWD/tools/replay-test.html" | grep -o '<title>[^<]*</title>' -->
+<html><head><meta charset="utf-8"><style>body{margin:0;background:#f5f5f5;width:430px}</style></head><body>
+<script type="module">
+import "../basement-ducting-card.js";
+const S = (v) => ({ state: String(v), attributes: { unit_of_measurement: "°C" } });
+const end = Date.now(), start = end - 2 * 3600e3;
+// Units alternate every 8 minutes: left exhausts while right takes air in, then the other way round.
+function history(ids) {
+  const out = {};
+  for (const e of ids) out[e] = [];
+  for (let t = start - 600e3, i = 0; t <= end; t += 60e3, i++) {
+    const leftEx = Math.floor(i / 8) % 2 === 0, sec = t / 1000;
+    const push = (e, s) => out[e] && out[e].push({ s: String(s), lu: sec });
+    push("sensor.l_phase", leftEx ? "exhaust" : "intake"); push("sensor.r_phase", leftEx ? "intake" : "exhaust");
+    push("sensor.l_in", leftEx ? 34 : 16); push("sensor.r_in", leftEx ? 18 : 42);
+    push("sensor.l_out", leftEx ? 20 : 8); push("sensor.r_out", leftEx ? 9 : 31);
+    push("sensor.heater_in", 25 + (i % 10) / 10);
+  }
+  return out;
+}
+const hass = {
+  states: { "sensor.l_in": S(30), "sensor.l_out": S(10), "sensor.l_phase": { state: "exhaust", attributes: {} },
+            "sensor.r_in": S(40), "sensor.r_out": S(30), "sensor.r_phase": { state: "intake", attributes: {} }, "sensor.heater_in": S(25) },
+  config: { unit_system: { temperature: "°C" } },
+  callWS: async (msg) => { window.lastWS = msg; return history(msg.entity_ids); },
+};
+const c = document.createElement("basement-ducting-card");
+c.setConfig({ left: { inside: "sensor.l_in", outside: "sensor.l_out", phase: "sensor.l_phase" },
+              right: { inside: "sensor.r_in", outside: "sensor.r_out", phase: "sensor.r_phase" }, heater_intake: "sensor.heater_in", replay_hours: 2 });
+c.hass = hass; document.body.appendChild(c);
+const r = c.shadowRoot, q = (s) => r.querySelector(".replay ." + s), el = (k) => r.querySelector(`[id^="${k}-bd"]`);
+const out = [];
+q("open").click();
+out.push("panel " + (q("panel").hidden ? "hidden" : "open") + " from=" + (q("from").value ? "set" : "empty"));
+q("load").click();
+setTimeout(() => {
+  out.push("ws=" + window.lastWS.type + " ids=" + window.lastWS.entity_ids.length);
+  out.push("player " + (q("player").hidden ? "hidden" : "shown") + " playing=" + q("play").textContent);
+  out.push("sub=" + el("t-sub").textContent.split(" · ")[0]);
+  q("play").click(); // pause
+  const pos = q("pos");
+  pos.value = "100"; pos.dispatchEvent(new Event("input"));
+  const a = [el("t-l-in").textContent, el("t-r-in").textContent, el("a-ex-l").classList.contains("idle") ? "L idle" : "L exhaust"];
+  pos.value = "170"; pos.dispatchEvent(new Event("input"));
+  const b = [el("t-l-in").textContent, el("t-r-in").textContent, el("a-ex-l").classList.contains("idle") ? "L idle" : "L exhaust"];
+  out.push("at 10%: " + a.join(",") + " | at 17%: " + b.join(","));
+  hass.states["sensor.l_in"] = S(99); c.hass = { ...hass }; // a live update during replay must not show
+  out.push("live ignored: " + (el("t-l-in").textContent !== "99.0 °C"));
+  q("open").click(); // back to live
+  out.push("back live: sub='" + el("t-sub").textContent + "' l_in=" + el("t-l-in").textContent + " panel " + (q("panel").hidden ? "hidden" : "open"));
+  document.title = out.join(" || ");
+}, 500);
+</script></body></html>

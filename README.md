@@ -87,6 +87,25 @@ Each unit (`left`, `right`):
 | `wye` | Optional sensor in the middle of the unit's wye. The wye then runs from `inside` (top) to it (bottom), and the hose ends at it. |
 | `outlet` | Optional sensor in the room outlet. While the unit takes air in, the outlet runs from the wye (top) to it (bottom); otherwise it shows this sensor. Its reading is in the outlet's badge (labelled "outlet"); without it the badge ("supply") shows the wye's reading while the unit takes air in and "idle" otherwise. |
 
+## Replay
+
+Below the picture, **Replay** plays back the recorder's history of the card's sensors in the same picture, like the
+Recuperator integration's replay but inside the card. Pick the period (it starts as the last `replay_hours`), press
+**Load**, and it plays at the chosen speed (`replay_speed`, e.g. 120× shows two hours in one minute). Pause, change
+the speed or drag the timeline at any time; the time shown is at the top of the picture and next to the timeline.
+**Back to live** returns to the live readings (live changes are held back while replaying).
+
+The history comes straight from Home Assistant (`history/history_during_period`), so it reaches back only as far as
+the recorder keeps it (10 days by default). Long periods of sensors that report every few seconds take a moment to
+load. For an idle hose or outlet, the replay uses each unit's last exhaust and intake before the moment shown, read
+from the history, so jumping around the timeline shows the same as playing through it.
+
+| Option | Default | What |
+| --- | --- | --- |
+| `replay` | `true` | Show the Replay button. |
+| `replay_hours` | `1.5` | How far back the period starts when Replay is opened. |
+| `replay_speed` | `120` | Starting playback speed (30, 60, 120, 300, 600 or 1800 in the menu; any other number is added to it). |
+
 ## How each part is coloured
 
 | Part | Colour |
@@ -117,7 +136,8 @@ moves.
 
 `tools/check.mjs` checks the colouring rules (`node tools/check.mjs`).
 
-`tools/test.html` shows three cards with mock readings in a browser (see the comment at its top).
+`tools/test.html` shows three cards with mock readings in a browser, and `tools/replay-test.html` runs a replay
+against a mock Home Assistant (see the comments at their tops).
 
 ## Licence
 

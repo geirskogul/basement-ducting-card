@@ -7,7 +7,7 @@
 //
 // The same render function also runs in Node (tools/render.mjs) to make a static picture.
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 // The temperature scale (°C, colour) of the recuperator integration's diagram, after the U.S. National Weather
 // Service temperature maps.
@@ -106,6 +106,9 @@ export function normalise(config) {
       name: heater.name || "Heater", intake_name: heater.intake_name || "Heater air intake",
     },
     hose_note: c.hose_note ?? "",
+    replay: c.replay ?? true,
+    replay_hours: Number(c.replay_hours) > 0 ? Number(c.replay_hours) : 1.5,
+    replay_speed: Number(c.replay_speed) > 0 ? Number(c.replay_speed) : 120,
     notes: c.notes === undefined || c.notes === null ? null : list(c.notes).map(String),
     // One marker per side; a marker without side: right goes on the left.
     markers: list(c.markers).filter((m) => m && typeof m === "object")
@@ -281,7 +284,7 @@ export function render(cfg, p, { live = false, uid = "s" } = {}) {
   ];
   const o = [];
   o.push(label(CX, 28, cfg.title, 18, "middle", true));
-  if (cfg.subtitle) o.push(label(CX, 46, cfg.subtitle, 12));
+  o.push(`<text id="${id("t-sub")}" x="${CX}" y="46" text-anchor="middle" font-size="${12 + FONT_BUMP}" fill="${TEXT}">${esc(cfg.subtitle || "")}</text>`);
 
   // Pipes: outside end at the top; streaks under the readings.
   o.push(pipe(LX, "g-pipe-l"), pipe(RX, "g-pipe-r"));
@@ -406,18 +409,47 @@ const CSS = `
   .still .streak.on, .still .drift.on { animation: none; }
   .still .streak.on { display: none; }
   @media (prefers-reduced-motion: reduce) { .streak.on, .drift.on { animation: none; } }
+  .replay { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 4px 4px 2px;
+            font: 13px/1.4 var(--paper-font-body1_-_font-family, sans-serif); color: var(--secondary-text-color, #8a9199); }
+  .replay[hidden], .replay [hidden] { display: none !important; }
+  .replay button, .replay select, .replay input { font: inherit; color: var(--primary-text-color, #222);
+            background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #ccc); border-radius: 6px; padding: 3px 8px; }
+  .replay button { cursor: pointer; }
+  .replay button.main { background: var(--primary-color, #03a9f4); border-color: transparent; color: var(--text-primary-color, #fff); }
+  .replay .row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; width: 100%; }
+  .replay .pos { flex: 1 1 140px; min-width: 120px; }
+  .replay .time { font-variant-numeric: tabular-nums; min-width: 9em; }
 `;
+
+/** A state as °C (null if not a number), converting °F and K. */
+export function celsius(state, unit) {
+  let v = parseFloat(state);
+  if (Number.isNaN(v)) return null;
+  if (unit === "°F") v = ((v - 32) * 5) / 9;
+  else if (unit === "K") v -= 273.15;
+  return v;
+}
+
+/** Index of the last point at or before t in a series of [time, state] sorted by time; -1 if none. */
+export function indexAt(series, t) {
+  let lo = 0, hi = (series?.length ?? 0) - 1, at = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (series[mid][0] <= t) { at = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return at;
+}
+
+/** The state of a series at time t (the last point at or before t), or null. */
+export function valueAt(series, t) {
+  const i = indexAt(series, t);
+  return i < 0 ? null : series[i][1];
+}
 
 function reading(hass, entity) {
   if (!entity) return null;
   const s = hass.states[entity];
-  if (!s) return null;
-  let v = parseFloat(s.state);
-  if (Number.isNaN(v)) return null;
-  const u = s.attributes.unit_of_measurement;
-  if (u === "°F") v = ((v - 32) * 5) / 9;
-  else if (u === "K") v -= 273.15;
-  return v;
+  return s ? celsius(s.state, s.attributes.unit_of_measurement) : null;
 }
 
 function readAll(hass, cfg) {
@@ -434,6 +466,22 @@ function readAll(hass, cfg) {
   r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
   return r;
 }
+
+const SPEEDS = [30, 60, 120, 300, 600, 1800];
+const REPLAY_BAR = `<div class="replay">
+  <div class="row"><button class="open">Replay</button><span class="msg"></span></div>
+  <div class="row panel" hidden>
+    <label>From <input class="from" type="datetime-local"></label>
+    <label>To <input class="to" type="datetime-local"></label>
+    <button class="load main">Load</button>
+  </div>
+  <div class="row player" hidden>
+    <button class="play">Play</button>
+    <select class="speed" title="Playback speed">${SPEEDS.map((x) => `<option value="${x}">${x}×</option>`).join("")}</select>
+    <input class="pos" type="range" min="0" max="1000" value="0" aria-label="Replay position">
+    <span class="time"></span>
+  </div>
+</div>`;
 
 let serial = 0;
 
@@ -471,29 +519,170 @@ class BasementDuctingCard extends BaseElement {
   getCardSize() { return 14; }
   getGridOptions() { return { columns: 12, rows: "auto", min_columns: 6 }; }
 
+  _unit(hass) {
+    const system = hass.config?.unit_system?.temperature;
+    return this._cfg.unit === "auto" ? (system === "°F" ? "°F" : "°C") : this._cfg.unit;
+  }
+
   set hass(hass) {
     this._hass = hass;
     if (!this._cfg) return;
+    if (this._rp) return; // replaying: live updates wait until it ends
     // Home Assistant sets hass on every state change in the house; only redraw when one of ours changed.
-    const unitSystem = hass.config?.unit_system?.temperature;
-    const seen = [unitSystem, ...this._entities.map((e) => hass.states[e])];
+    const seen = [hass.config?.unit_system?.temperature, ...this._entities.map((e) => hass.states[e])];
     if (this._built && this._seen && seen.every((x, i) => x === this._seen[i])) return;
     this._seen = seen;
-    const unit = this._cfg.unit === "auto" ? (unitSystem === "°F" ? "°F" : "°C") : this._cfg.unit;
-    const p = paint(this._cfg, readAll(hass, this._cfg), this._mem, { unit });
-    if (!this._built) {
-      const root = this.shadowRoot || this.attachShadow({ mode: "open" });
-      root.innerHTML = `<style>${CSS}</style><ha-card>${render(this._cfg, p, { live: true, uid: this._uid })}</ha-card>`;
-      const svg = root.querySelector("svg");
-      svg.classList.add(this._cfg.animate ? "smooth" : "still");
-      this._built = true;
-    }
+    const p = paint(this._cfg, readAll(hass, this._cfg), this._mem, { unit: this._unit(hass) });
+    if (!this._built) this._build(p);
     this._apply(p);
+  }
+
+  _build(p) {
+    const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>${CSS}</style><ha-card>${render(this._cfg, p, { live: true, uid: this._uid })}` +
+      (this._cfg.replay ? REPLAY_BAR : "") + `</ha-card>`;
+    this._svg = root.querySelector("svg");
+    this._svg.classList.add(this._cfg.animate ? "smooth" : "still");
+    this._built = true;
+    if (!this._cfg.replay) return;
+    const q = (c) => root.querySelector(".replay ." + c);
+    this._ui = { open: q("open"), panel: q("panel"), from: q("from"), to: q("to"), load: q("load"), player: q("player"),
+                 play: q("play"), speed: q("speed"), pos: q("pos"), time: q("time"), msg: q("msg") };
+    const u = this._ui;
+    u.speed.value = String(this._cfg.replay_speed);
+    if (u.speed.value !== String(this._cfg.replay_speed)) {
+      u.speed.insertAdjacentHTML("beforeend", `<option value="${this._cfg.replay_speed}">${this._cfg.replay_speed}×</option>`);
+      u.speed.value = String(this._cfg.replay_speed);
+    }
+    u.open.addEventListener("click", () => (this._rp || !u.panel.hidden ? this._live() : this._openReplay()));
+    u.load.addEventListener("click", () => this._loadReplay());
+    u.play.addEventListener("click", () => this._togglePlay());
+    u.pos.addEventListener("input", () => {
+      if (!this._rp) return;
+      this._rp.t = this._rp.start + (this._rp.end - this._rp.start) * (u.pos.value / 1000);
+      this._frame();
+    });
+  }
+
+  disconnectedCallback() { if (this._rp) this._rp.playing = false; }
+
+  // ---- Replay: the recorder's history of the card's sensors, played back in the same picture.
+
+  _openReplay() {
+    const u = this._ui, now = new Date();
+    const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    if (!u.from.value) u.from.value = local(new Date(now.getTime() - this._cfg.replay_hours * 3600000));
+    if (!u.to.value) u.to.value = local(now);
+    u.panel.hidden = false;
+    u.open.textContent = "Back to live";
+    u.msg.textContent = "";
+  }
+
+  _live() {
+    const u = this._ui;
+    if (this._rp) this._rp.playing = false;
+    this._rp = null;
+    u.panel.hidden = true;
+    u.player.hidden = true;
+    u.open.textContent = "Replay";
+    u.msg.textContent = "";
+    this._svg.classList.toggle("smooth", !!this._cfg.animate);
+    this._seen = null;
+    if (this._hass) this.hass = this._hass;
+  }
+
+  async _loadReplay() {
+    const u = this._ui, hass = this._hass;
+    const start = new Date(u.from.value), end = new Date(u.to.value);
+    if (!(start < end)) { u.msg.textContent = "The start must be before the end."; return; }
+    if (this._rp) this._rp.playing = false;
+    u.msg.textContent = "Loading the history…";
+    u.load.disabled = true;
+    try {
+      const res = await hass.callWS({
+        type: "history/history_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
+        entity_ids: this._entities, minimal_response: true, no_attributes: true, significant_changes_only: false,
+      });
+      const series = {};
+      let points = 0;
+      for (const [entity, states] of Object.entries(res || {})) {
+        series[entity] = states.map((x) => [(x.lu ?? x.lc) * 1000, x.s]).filter((x) => !Number.isNaN(x[0]))
+          .sort((a, b) => a[0] - b[0]);
+        points += series[entity].length;
+      }
+      if (!points) { u.msg.textContent = "The recorder has no history for these sensors in that period."; return; }
+      // Units as the sensors report them now (history requested without attributes).
+      const units = Object.fromEntries(this._entities.map((e) => [e, hass.states[e]?.attributes?.unit_of_measurement]));
+      this._rp = { series, units, start: start.getTime(), end: end.getTime(), t: start.getTime(), playing: false, unit: this._unit(hass) };
+      this._svg.classList.remove("smooth"); // colours follow the timeline at once
+      u.player.hidden = false;
+      u.msg.textContent = "";
+      this._frame();
+      this._togglePlay();
+    } catch (err) {
+      u.msg.textContent = "Could not load the history: " + (err?.message || err);
+    } finally {
+      u.load.disabled = false;
+    }
+  }
+
+  _togglePlay() {
+    const rp = this._rp, u = this._ui;
+    if (!rp) return;
+    if (rp.t >= rp.end) rp.t = rp.start;
+    rp.playing = !rp.playing;
+    u.play.textContent = rp.playing ? "Pause" : "Play";
+    if (!rp.playing) return;
+    const loop = (rp.loop = (rp.loop || 0) + 1); // a newer Play ends this loop
+    let last = performance.now();
+    const step = (now) => {
+      if (this._rp !== rp || !rp.playing || rp.loop !== loop) return;
+      rp.t = Math.min(rp.end, rp.t + (now - last) * Number(u.speed.value || this._cfg.replay_speed));
+      last = now;
+      this._frame();
+      if (rp.t >= rp.end) { rp.playing = false; u.play.textContent = "Play"; return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  /** The readings at the replay's current time, and each unit's last exhaust and intake readings before it. */
+  _frame() {
+    const rp = this._rp, c = this._cfg, u = this._ui;
+    if (!rp) return;
+    const t = rp.t;
+    const at = (e) => (e ? celsius(valueAt(rp.series[e], t), rp.units[e]) : null);
+    const r = {}, mem = {};
+    for (const s of SIDES) {
+      const k = c[s];
+      r[s] = { inside: at(k.inside), outside: at(k.outside), wye: at(k.wye), outlet: at(k.outlet), phase: k.phase ? valueAt(rp.series[k.phase], t) : null };
+      mem[s] = {};
+      const ph = rp.series[k.phase] || [];
+      // The most recent exhaust and intake before now: read the sensors just before each one ended.
+      for (let i = indexAt(ph, t); i >= 0 && (mem[s].ex === undefined || mem[s].sup === undefined); i--) {
+        const endAt = Math.min(t, i + 1 < ph.length ? ph[i + 1][0] : t) - 1000;
+        const v = (e) => (e ? celsius(valueAt(rp.series[e], endAt), rp.units[e]) : null);
+        if (ph[i][1] === "exhaust" && mem[s].ex === undefined) { mem[s].exIn = v(k.inside); mem[s].ex = known(v(k.wye), mem[s].exIn); }
+        if (ph[i][1] === "intake" && mem[s].sup === undefined) mem[s].sup = known(v(k.outlet), v(k.wye), v(k.inside));
+      }
+    }
+    for (const key of SHARED_SLOTS) r[key] = at(c[key]);
+    const rooms = c.room.map(at).filter((x) => x !== null);
+    r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
+    this._apply(paint(c, r, mem, { unit: rp.unit }));
+    const when = new Date(t), span = rp.end - rp.start;
+    const label = when.toLocaleString(undefined, span > 20 * 3600000
+      ? { weekday: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const sub = this._el("t-sub");
+    if (sub) sub.textContent = "replay · " + label;
+    u.time.textContent = label;
+    u.pos.value = String(Math.round(((t - rp.start) / span) * 1000));
   }
 
   _el(key) { return this.shadowRoot.getElementById(`${key}-${this._uid}`); }
 
   _apply(p) {
+    if (!this._rp) { const sub = this._el("t-sub"); if (sub && sub.textContent !== (this._cfg.subtitle || "")) sub.textContent = this._cfg.subtitle || ""; }
     for (const [key, [t1, t2]] of Object.entries(p.grads)) {
       const g = this._el(key);
       if (!g) continue;
@@ -544,6 +733,13 @@ const SCHEMA = [
     ],
   },
   { name: "hose_note", selector: { text: {} } },
+  {
+    type: "expandable", name: "replay_options", title: "Replay", flatten: true, schema: [
+      { name: "replay", selector: { boolean: {} } },
+      { name: "replay_hours", selector: { number: { min: 0.25, max: 240, step: 0.25, mode: "box", unit_of_measurement: "h" } } },
+      { name: "replay_speed", selector: { select: { mode: "dropdown", options: SPEEDS.map((x) => ({ value: String(x), label: `${x}×` })) } } },
+    ],
+  },
 ];
 const LABELS = {
   title: "Title", subtitle: "Subtitle", animate: "Animate the airflow", unit: "Unit for the readings", name: "Name (may span lines)",
@@ -553,6 +749,7 @@ const LABELS = {
   hood_wye: "Hood wye sensor (optional)", heater_intake: "Heater air intake sensor (optional)",
   room: "Room sensors (optional, averaged)", note: "Note under the heater's name",
   intake_name: "Air intake sensor label", intake_detail: "Air intake sensor detail", hose_note: "Note at the bottom",
+  replay: "Show the Replay button", replay_hours: "Replay: default period (hours back)", replay_speed: "Replay: default speed",
 };
 
 class BasementDuctingCardEditor extends BaseElement {
@@ -567,7 +764,9 @@ class BasementDuctingCardEditor extends BaseElement {
   // off. Nothing is added to the YAML unless it is changed in the form.
   _data(config) {
     const room = config.room;
-    return { ...config, animate: config.animate !== false, room: room === undefined || room === null || room === "" ? [] : [].concat(room) };
+    return { ...config, animate: config.animate !== false, replay: config.replay !== false,
+      replay_speed: config.replay_speed === undefined ? undefined : String(config.replay_speed),
+      room: room === undefined || room === null || room === "" ? [] : [].concat(room) };
   }
 
   _form_() {
@@ -578,6 +777,8 @@ class BasementDuctingCardEditor extends BaseElement {
       this._form.addEventListener("value-changed", (ev) => {
         const value = { ...ev.detail.value };
         if (value.animate === true && this._config.animate === undefined) delete value.animate;
+        if (value.replay === true && this._config.replay === undefined) delete value.replay;
+        if (value.replay_speed !== undefined) value.replay_speed = Number(value.replay_speed);
         if (Array.isArray(value.room) && !value.room.length && this._config.room === undefined) delete value.room;
         const config = { ...value, type: this._config.type };
         this._config = config;

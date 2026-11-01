@@ -1,6 +1,6 @@
 // Checks of the colouring rules (node tools/check.mjs); run in CI.
 import assert from "node:assert/strict";
-import { normalise, paint, renderStatic, along, colour } from "../basement-ducting-card.js";
+import { normalise, paint, renderStatic, along, colour, valueAt, indexAt, celsius } from "../basement-ducting-card.js";
 
 const R = (left, right, extra = {}) => ({
   left: { inside: null, outside: null, phase: null, wye: null, outlet: null, ...left },
@@ -47,4 +47,19 @@ assert.equal(colour(along(null, null, 3)), "#9aa0a6");
 }
 // Labels are escaped.
 assert.ok(!renderStatic({ title: "<script>x</script>" }, {}).includes("<script>"));
+// Replay: the state at a time is the last one at or before it; °F and K become °C.
+{
+  const series = [[100, "a"], [200, "b"], [300, "c"]];
+  assert.equal(valueAt(series, 50), null);
+  assert.equal(valueAt(series, 100), "a");
+  assert.equal(valueAt(series, 250), "b");
+  assert.equal(valueAt(series, 999), "c");
+  assert.equal(indexAt([], 5), -1);
+  assert.equal(valueAt(undefined, 5), null);
+  assert.equal(celsius("212", "°F"), 100);
+  assert.equal(Math.round(celsius("300", "K") * 100) / 100, 26.85);
+  assert.equal(celsius("unavailable", "°C"), null);
+  const c = normalise({});
+  assert.equal(c.replay, true); assert.equal(c.replay_hours, 1.5); assert.equal(c.replay_speed, 120);
+}
 console.log("all checks passed");
