@@ -70,7 +70,7 @@ each outlet one (at its end), as drawn.
 | `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`) from the breathing cycles; see [The hood without a sensor](#the-hood-without-a-sensor). |
 | `hood_wye` | | Optional sensor in the middle of the hood's wye. The hood then runs from `hood` at the bottom to this at the top, and the hoses start from it. |
 | `heater_intake` | | Optional sensor at the heater's air intake: the bottom of the heater's gradient (the top is the hood). Without it the room temperature is used. |
-| `room` | | Optional room sensor, or a list of them (averaged). Colours an idle outlet without its own sensor and the bottom of the heater when there is no `heater_intake`, and gets its own badge. |
+| `room` | | Optional room sensor, or a list of them (averaged). Colours the bottom of the heater when there is no `heater_intake`, and gets its own badge. |
 | `heater` | | Labels: `name` (default `Heater`; `\n` for a new line), `note` (under the name), `intake_name` (default `Heater air intake`) and `intake_detail`: the label of the `heater_intake` sensor, shown when that is set. |
 | `hose_note` | | A line of text at the bottom. |
 | `notes` | | A line or a list of lines that replaces the notes at the bottom: `hose_note` and the automatic ones (including the explanation of `*`). Three lines fit. |
@@ -85,7 +85,7 @@ Each unit (`left`, `right`):
 | `outside` | Probe at the outdoor end of the core. |
 | `phase` | Entity with the state `exhaust` or `intake` (e.g. the Recuperator integration's Phase sensor; a `select` or `input_select` works too). Any other state counts as idle. |
 | `wye` | Optional sensor in the middle of the unit's wye. The wye then runs from `inside` (top) to it (bottom), and the hose ends at it. |
-| `outlet` | Optional sensor in the room outlet. While the unit takes air in, the outlet runs from the wye (top) to it (bottom); otherwise it shows this sensor. Its reading is in the outlet's badge (labelled "outlet"); without it the badge ("supply") shows the wye's reading while the unit takes air in and "idle" otherwise. |
+| `outlet` | Optional sensor in the room outlet, behind its one-way damper. The outlet then runs from the wye (top) to it (bottom), and its badge shows it; without it the outlet and its badge follow the wye. |
 
 ## Replay
 
@@ -97,8 +97,8 @@ the speed or drag the timeline at any time; the time shown is at the top of the 
 
 The history comes straight from Home Assistant (`history/history_during_period`), so it reaches back only as far as
 the recorder keeps it (10 days by default). Long periods of sensors that report every few seconds take a moment to
-load. For an idle hose or outlet, the replay uses each unit's last exhaust and intake before the moment shown, read
-from the history, so jumping around the timeline shows the same as playing through it.
+load. For an idle hose, the replay uses its unit's last exhaust before the moment shown, read from the history, so
+jumping around the timeline shows the same as playing through it.
 
 | Option | Default | What |
 | --- | --- | --- |
@@ -113,7 +113,7 @@ from the history, so jumping around the timeline shows the same as playing throu
 | Pipe (the core) | `outside` at the top to `inside` at the bottom. |
 | Unit's wye | `inside` to `wye` (or `inside` alone). |
 | Hose | Hood wye (or hood) at the hood end. The unit end: while the unit exhausts, its `wye` (or `inside`); otherwise the dampers are shut and the hose keeps that unit's last exhaust reading (the hood's until there is one). |
-| Outlet | While the unit takes air in: the wye's temperature (`wye`, or `inside`) to `outlet` (or the wye's alone). Otherwise `outlet`, or the room, or the last supply reading. |
+| Outlet | The same as the bottom of the unit's wye (`wye`, or `inside`) in every phase: the outlet's cavity sits behind its one-way damper, open to the wye. With an `outlet` sensor it runs from the wye down to that reading. |
 | Hood | `hood` to `hood_wye`; with neither, the estimate below. |
 | Hood wye | `hood_wye`, else as the hood. |
 | Heater | `heater_intake` (or the room) at the bottom to the hood at the top. |
@@ -146,7 +146,7 @@ node tools/render.mjs docs/example/config.json docs/example/readings.json exampl
 ```
 
 `config.json` holds the card's options (JSON); `readings.json` the temperatures in °C
-(`left`/`right`: `inside`, `outside`, `wye`, `outlet`, and `supply` for the outlet; and `hood`, `hood_wye`,
+(`left`/`right`: `inside`, `outside`, `wye`, `outlet`; and `hood`, `hood_wye`,
 `heater_intake`, `room`). A reading gets its number only when its option is set in `config.json` (any entity id
 will do there); without it, it still colours the picture. Arrows are drawn as if both units were running; nothing
 moves.

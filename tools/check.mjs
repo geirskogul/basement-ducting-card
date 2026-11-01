@@ -23,13 +23,16 @@ const cfg = normalise({});
 }
 // A hood or hood wye sensor wins, without the * mark.
 assert.equal(paint(cfg, R({ inside: 23 }, { inside: 29 }, { hood_wye: 44 })).texts["t-hood"], "44.0 °C");
-// An outlet: supply while taking air in (from the wye), else its own sensor, else the room.
+// An outlet sits behind its damper, open to the wye: the wye body's colour in every phase, down to its own sensor.
 {
   const p = paint(cfg, R({ inside: 20, wye: 18, phase: "intake" }, { inside: 40, phase: "exhaust" }, { room: 22 }));
   assert.deepEqual(p.grads["g-out-l"], [18, 18]);
   assert.equal(p.texts["t-l-sup"], "18.0 °C");
-  assert.deepEqual(p.grads["g-out-r"], [22, 22]);
-  assert.equal(p.texts["t-r-sup"], "idle");
+  assert.deepEqual(p.grads["g-out-r"], [40, 40]);
+  assert.equal(p.texts["t-r-sup"], "40.0 °C");
+  const q = paint(cfg, R({ inside: 34, phase: "exhaust", outlet: 29 }, {}));
+  assert.deepEqual(q.grads["g-out-l"], [34, 29]);
+  assert.equal(q.texts["t-l-sup"], "29.0 °C");
 }
 // Display in °F; a missing gradient end takes the other end's colour; none at all is grey.
 assert.equal(paint(cfg, R({ inside: 20 }, {}), undefined, { unit: "°F" }).texts["t-l-in"], "68.0 °F");

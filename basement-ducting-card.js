@@ -7,7 +7,7 @@
 //
 // The same render function also runs in Node (tools/render.mjs) to make a static picture.
 
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
 
 // The temperature scale (°C, colour) of the recuperator integration's diagram, after the U.S. National Weather
 // Service temperature maps.
@@ -120,9 +120,8 @@ export function normalise(config) {
 // What colour and text every part gets, from the readings (°C) and phases
 
 /**
- * r: { left: {inside, outside, phase, wye, outlet, supply}, right: {...}, hood, hood_wye, heater_intake, room }
- *    (supply: only for typical pictures, the supply air to show in an outlet)
- * mem: remembered readings from earlier updates ({left: {exIn, ex, sup}, right: {...}}), updated in place
+ * r: { left: {inside, outside, phase, wye, outlet}, right: {...}, hood, hood_wye, heater_intake, room, hood_estimate }
+ * mem: remembered readings from earlier updates ({left: {exIn, ex}, right: {...}}), updated in place
  * opts: { typical: false, unit: "°C" | "°F" }
  */
 export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
@@ -140,7 +139,6 @@ export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
     const inn = !typical && u.phase === "intake";
     const wye = known(u.wye, u.inside);
     if (!typical && ex && has(u.inside)) { m.exIn = u.inside; m.ex = wye; }
-    if (!typical && inn && has(wye)) m.sup = known(u.outlet, wye);
     state[s] = { u, m, ex, inn, wye };
   }
   // The hood: its own sensor, else the hood wye's, else estimated: from the cycle peaks (r.hood_estimate, see
@@ -163,21 +161,14 @@ export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
     // A hose carries hood air while its unit exhausts; otherwise its dampers are shut and it keeps the last
     // exhaust reading (or the hood's until there is one).
     p.grads[`g-hose-${k}`] = [hoodWye, ex ? wye : known(m.ex, hoodWye)];
-    // An outlet carries supply air while its unit takes air in; otherwise it shows its own sensor or the room.
-    if (typical) {
-      p.grads[`g-out-${k}`] = [known(u.supply, wye), known(u.outlet, u.supply, wye)];
-    } else if (inn) {
-      p.grads[`g-out-${k}`] = [wye, known(u.outlet, wye)];
-    } else {
-      const idle = known(u.outlet, room, m.sup);
-      p.grads[`g-out-${k}`] = [idle, idle];
-    }
+    // An outlet's cavity sits behind its one-way damper, open to the unit's wye: it has the wye's air whatever
+    // the phase, down to its own sensor's reading at the damper if it has one.
+    p.grads[`g-out-${k}`] = [wye, known(u.outlet, wye)];
 
     p.texts[`t-${k}-out`] = show(u.outside);
     p.texts[`t-${k}-in`] = show(u.inside);
     p.texts[`t-${k}-wye`] = show(u.wye);
-    p.texts[`t-${k}-sup`] = typical ? show(known(u.outlet, u.supply, wye))
-      : has(u.outlet) ? show(u.outlet) : inn ? show(wye) : "idle";
+    p.texts[`t-${k}-sup`] = show(known(u.outlet, wye));
 
     p.active[`a-ex-${k}`] = ex;
     p.active[`a-in-${k}`] = typical || inn;
@@ -304,7 +295,7 @@ export function render(cfg, p, { live = false, uid = "s" } = {}) {
   o.push(`<path d="M ${LX - 36},450 L ${LX - 36},524 L ${LX - 10},524 L ${LX - 10},450" fill="url(#${id("g-out-l")})" stroke="${OUTLINE}" stroke-width="3" stroke-linejoin="round"/>`);
   o.push(`<path d="M ${RX + 36},450 L ${RX + 36},524 L ${RX + 10},524 L ${RX + 10},450" fill="url(#${id("g-out-r")})" stroke="${OUTLINE}" stroke-width="3" stroke-linejoin="round"/>`);
   o.push(badge(LX - 76, 488, "t-l-sup"), badge(RX + 76, 488, "t-r-sup"));
-  o.push(label(LX - 76, 516, cfg.left.outlet ? "outlet" : "supply", 11), label(RX + 76, 516, cfg.right.outlet ? "outlet" : "supply", 11));
+  o.push(label(LX - 76, 516, "outlet", 11), label(RX + 76, 516, "outlet", 11));
 
   // The hood and its wye.
   const wye = `M ${CX - 15},${AY + 93} L ${CX - 15},${AY + 51} L ${OUTER_L[0].toFixed(1)},${OUTER_L[1].toFixed(1)} L ${INNER_L[0].toFixed(1)},${INNER_L[1].toFixed(1)} ` +
@@ -367,7 +358,6 @@ export function render(cfg, p, { live = false, uid = "s" } = {}) {
   o.push(damper(60, ly + 48, 0) + label(92, ly + 52, "one-way damper (arrow: the way air may pass)", 12, "start"));
   const notes = cfg.notes ?? [
     cfg.hose_note,
-    live ? "Outlets show the supply air while that unit takes air in." : "",
     (live ? !cfg.hood && !cfg.hood_wye : p.estimated) ? "*Hood: not measured; estimated from the inside probes." : "",
   ];
   let ny = 1060;
@@ -384,7 +374,7 @@ export function render(cfg, p, { live = false, uid = "s" } = {}) {
 export function renderStatic(config, readings, { unit = "°C" } = {}) {
   const cfg = normalise(config);
   const r = { left: {}, right: {}, ...readings };
-  for (const s of SIDES) for (const k of [...SIDE_SLOTS, "supply"]) r[s][k] = r[s][k] ?? null;
+  for (const s of SIDES) for (const k of SIDE_SLOTS) r[s][k] = r[s][k] ?? null;
   for (const k of [...SHARED_SLOTS, "room"]) r[k] = r[k] ?? null;
   return render(cfg, paint(cfg, r, undefined, { typical: true, unit }), { live: false, uid: "s" });
 }
@@ -781,12 +771,11 @@ class BasementDuctingCard extends BaseElement {
       r[s] = { inside: at(k.inside), outside: at(k.outside), wye: at(k.wye), outlet: at(k.outlet), phase: k.phase ? valueAt(rp.series[k.phase], t) : null };
       mem[s] = {};
       const ph = rp.series[k.phase] || [];
-      // The most recent exhaust and intake before now: read the sensors just before each one ended.
-      for (let i = indexAt(ph, t); i >= 0 && (mem[s].ex === undefined || mem[s].sup === undefined); i--) {
+      // The most recent exhaust before now: read the sensors just before it ended.
+      for (let i = indexAt(ph, t); i >= 0 && mem[s].ex === undefined; i--) {
         const endAt = Math.min(t, i + 1 < ph.length ? ph[i + 1][0] : t) - 1000;
         const v = (e) => (e ? celsius(valueAt(rp.series[e], endAt), rp.units[e]) : null);
         if (ph[i][1] === "exhaust" && mem[s].ex === undefined) { mem[s].exIn = v(k.inside); mem[s].ex = known(v(k.wye), mem[s].exIn); }
-        if (ph[i][1] === "intake" && mem[s].sup === undefined) mem[s].sup = known(v(k.outlet), v(k.wye), v(k.inside));
       }
     }
     for (const key of SHARED_SLOTS) r[key] = at(c[key]);
