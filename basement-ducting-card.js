@@ -7,7 +7,7 @@
 //
 // The same render function also runs in Node (tools/render.mjs) to make a static picture.
 
-export const VERSION = "1.4.0";
+export const VERSION = "1.5.0";
 
 // The temperature scale (°C, colour) of the recuperator integration's diagram, after the U.S. National Weather
 // Service temperature maps.
@@ -393,21 +393,16 @@ export function renderStatic(config, readings, { unit = "°C" } = {}) {
 const CSS = `
   ha-card { padding: 8px; overflow: hidden; }
   svg { display: block; width: 100%; height: auto; }
-  .streak { fill: none; stroke: #fff; stroke-opacity: 0.75; stroke-width: 2.4; stroke-linecap: round;
-            stroke-dasharray: 9 21; display: none; }
-  .streak.on { display: inline; animation: run-fwd 1.4s linear infinite; }
-  .streak.on.rev { animation-name: run-rev; }
+  .streak { fill: none; stroke: none; }
+  .chev { fill: none; stroke: #fff; stroke-opacity: 0.85; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
   .arrow { transition: opacity 1.5s; }
   .arrow.idle { opacity: 0.2; }
   .drift.on { animation: drift 3s linear infinite; }
-  @keyframes run-fwd { to { stroke-dashoffset: -30; } }
-  @keyframes run-rev { to { stroke-dashoffset: 30; } }
   @keyframes drift { to { stroke-dashoffset: -24; } }
   .smooth stop { transition: stop-color 2s; }
   .smooth .fill { transition: fill 2s; }
-  .still .streak.on, .still .drift.on { animation: none; }
-  .still .streak.on { display: none; }
-  @media (prefers-reduced-motion: reduce) { .streak.on, .drift.on { animation: none; } }
+  .still .drift.on { animation: none; }
+  @media (prefers-reduced-motion: reduce) { .drift.on { animation: none; } }
   .replay { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 4px 4px 2px;
             font: 13px/1.4 var(--paper-font-body1_-_font-family, sans-serif); color: var(--secondary-text-color, #8a9199); }
   .replay[hidden], .replay [hidden] { display: none !important; }
@@ -537,6 +532,8 @@ function sideSeries(cfg, series, units) {
 }
 
 const SPEEDS = [30, 60, 120, 300, 600, 1800];
+const EASE_MS = 450; // replay: how quickly the colours follow the timeline (screen time)
+const clone = (x) => JSON.parse(JSON.stringify(x));
 const REPLAY_BAR = `<div class="replay">
   <div class="row"><button class="open">Replay</button><span class="msg"></span></div>
   <div class="row panel" hidden>
@@ -685,6 +682,7 @@ class BasementDuctingCard extends BaseElement {
       (this._cfg.replay ? REPLAY_BAR : "") + `</ha-card>`;
     this._svg = root.querySelector("svg");
     this._svg.classList.add(this._cfg.animate ? "smooth" : "still");
+    this._addArrows();
     this._built = true;
     if (!this._cfg.replay) return;
     const q = (c) => root.querySelector(".replay ." + c);
@@ -812,7 +810,7 @@ class BasementDuctingCard extends BaseElement {
     r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
     r.hood_estimate = rp.cycles.length ? hoodEstimate(rp.cycles, t) : null;
     SIDES.forEach((s, i) => { r[s].hose = rp.cycles.length ? cycleEstimate(rp.cycles, t, (cy) => cy.sides[i]) : null; });
-    this._apply(paint(c, r, mem, { unit: rp.unit }));
+    this._apply(paint(c, r, mem, { unit: rp.unit }), true);
     const when = new Date(t), span = rp.end - rp.start;
     const label = when.toLocaleString(undefined, span > 20 * 3600000
       ? { weekday: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -824,14 +822,13 @@ class BasementDuctingCard extends BaseElement {
 
   _el(key) { return this.shadowRoot.getElementById(`${key}-${this._uid}`); }
 
-  _apply(p) {
+  /**
+   * Show a paint. Live, colours change at once and CSS fades them over 2 s. In a replay (ease = true) the colours
+   * glide toward the paint over about half a second of screen time, whatever the speed, so a quick swing in the
+   * readings never shows as a jump; the readings in the badges are exact.
+   */
+  _apply(p, ease = false) {
     if (!this._rp) { const sub = this._el("t-sub"); if (sub && sub.textContent !== (this._cfg.subtitle || "")) sub.textContent = this._cfg.subtitle || ""; }
-    for (const [key, [t1, t2]] of Object.entries(p.grads)) {
-      const g = this._el(key);
-      if (!g) continue;
-      g.querySelectorAll("stop").forEach((s, i) => { s.style.stopColor = colour(along(t1, t2, i)); });
-    }
-    for (const [key, t] of Object.entries(p.fills)) { const e = this._el(key); if (e) e.style.fill = colour(t); }
     for (const [key, text] of Object.entries(p.texts)) { const e = this._el(key); if (e && e.textContent !== text) e.textContent = text; }
     for (const [key, on] of Object.entries(p.active)) { const e = this._el(key); if (e) e.classList.toggle("idle", !on); }
     for (const [key, [on, rev]] of Object.entries(p.streaks)) {
@@ -839,6 +836,81 @@ class BasementDuctingCard extends BaseElement {
       if (!e) continue;
       e.classList.toggle("on", on);
       e.classList.toggle("rev", !!rev);
+      const f = this._el(key + "-f"), r = this._el(key + "-r");
+      if (f) f.style.display = on && !rev ? "" : "none";
+      if (r) r.style.display = on && rev ? "" : "none";
+    }
+    this._target = { grads: p.grads, fills: p.fills };
+    if (ease) this._ease();
+    else this._paintColours((this._shown = clone(this._target)));
+  }
+
+  _paintColours(c) {
+    for (const [key, [t1, t2]] of Object.entries(c.grads)) {
+      const g = this._el(key);
+      if (!g) continue;
+      g.querySelectorAll("stop").forEach((s, i) => { s.style.stopColor = colour(along(t1, t2, i)); });
+    }
+    for (const [key, t] of Object.entries(c.fills)) { const e = this._el(key); if (e) e.style.fill = colour(t); }
+  }
+
+  _ease() {
+    if (this._easing) return;
+    this._easing = true;
+    if (!this._shown) this._shown = clone(this._target);
+    let last = performance.now();
+    const step = (now) => {
+      const k = 1 - Math.exp(-(now - last) / EASE_MS), tgt = this._target, cur = this._shown;
+      last = now;
+      let moving = false;
+      const toward = (a, b) => {
+        if (!has(a) || !has(b)) return b;
+        const v = a + (b - a) * k;
+        if (Math.abs(b - v) > 0.1) { moving = true; return v; } // 0.1 °C: less than one colour step
+        return b;
+      };
+      for (const [key, ends] of Object.entries(tgt.grads)) cur.grads[key] = ends.map((b, i) => toward(cur.grads[key]?.[i], b));
+      for (const [key, b] of Object.entries(tgt.fills)) cur.fills[key] = toward(cur.fills[key], b);
+      this._paintColours(cur);
+      if (moving && this._rp && this.isConnected !== false) requestAnimationFrame(step);
+      else this._easing = false;
+    };
+    requestAnimationFrame(step);
+  }
+
+  /** White chevrons that glide along each airflow path (a forward and a reverse set per path), shown while air moves. */
+  _addArrows() {
+    if (!this._cfg.animate || (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
+    const NS = "http://www.w3.org/2000/svg", SPACING = 30, SPEED = 21; // px between arrows, px per second
+    for (const track of this._svg.querySelectorAll(".streak")) {
+      const len = track.getTotalLength ? track.getTotalLength() : 0;
+      if (!len) continue;
+      const n = Math.max(1, Math.round(len / SPACING)), dur = len / SPEED;
+      for (const [suffix, rev] of [["-f", false], ["-r", true]]) {
+        const g = document.createElementNS(NS, "g");
+        g.setAttribute("id", track.id.replace(/-(bd\d+)$/, `${suffix}-$1`));
+        g.style.display = "none";
+        for (let i = 0; i < n; i++) {
+          const a = document.createElementNS(NS, "path");
+          a.setAttribute("class", "chev");
+          a.setAttribute("d", "M -3.5,-3.5 L 1.5,0 L -3.5,3.5");
+          const m = document.createElementNS(NS, "animateMotion");
+          m.setAttribute("dur", `${dur.toFixed(2)}s`);
+          m.setAttribute("begin", `-${((i * dur) / n).toFixed(2)}s`);
+          m.setAttribute("repeatCount", "indefinite");
+          m.setAttribute("rotate", rev ? "auto-reverse" : "auto");
+          m.setAttribute("keyPoints", rev ? "1;0" : "0;1");
+          m.setAttribute("keyTimes", "0;1");
+          m.setAttribute("calcMode", "linear");
+          const mp = document.createElementNS(NS, "mpath");
+          mp.setAttribute("href", "#" + track.id);
+          mp.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#" + track.id);
+          m.appendChild(mp);
+          a.appendChild(m);
+          g.appendChild(a);
+        }
+        track.after(g);
+      }
     }
   }
 }

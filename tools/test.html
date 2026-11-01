@@ -32,7 +32,7 @@ setTimeout(() => {
   document.title = [...document.querySelectorAll("basement-ducting-card")].map((c, i) => {
     const r = c.shadowRoot;
     const on = [...r.querySelectorAll(".streak.on")].map((e) => e.id.replace(/-bd\d+$/, ""));
-    const shown = [...r.querySelectorAll(".streak.on")].filter((e) => getComputedStyle(e).display !== "none").length;
+    const shown = [...r.querySelectorAll("g[id*='-f-bd'], g[id*='-r-bd']")].filter((e) => e.style.display !== "none").length;
     return `${i}: on=${on.join(",")} visible=${shown} hood=${r.querySelector("[id^=t-hood-]").textContent}`;
   }).join(" | ");
 }, 300);

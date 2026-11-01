@@ -2,6 +2,11 @@
 <!-- Replay test with a mock Home Assistant that serves two hours of made-up history: open with
      chromium --headless=new --no-sandbox --allow-file-access-from-files --virtual-time-budget=4000 --dump-dom "file://$PWD/tools/replay-test.html" | grep -o '<title>[^<]*</title>' -->
 <html><head><meta charset="utf-8"><style>body{margin:0;background:#f5f5f5;width:430px}</style></head><body>
+<script>
+// Headless Chromium under --virtual-time-budget delivers almost no animation frames; a timer-driven stand-in keeps
+// the card's playback and colour easing running in virtual time (real browsers use the real one).
+window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+</script>
 <script type="module">
 import "../basement-ducting-card.js";
 const S = (v) => ({ state: String(v), attributes: { unit_of_measurement: "°C" } });
@@ -35,7 +40,7 @@ const out = [];
 q("open").click();
 out.push("panel " + (q("panel").hidden ? "hidden" : "open") + " from=" + (q("from").value ? "set" : "empty"));
 q("load").click();
-setTimeout(() => {
+setTimeout(async () => {
   out.push("ws=" + window.lastWS.type + " ids=" + window.lastWS.entity_ids.length);
   out.push("player " + (q("player").hidden ? "hidden" : "shown") + " playing=" + q("play").textContent);
   out.push("sub=" + el("t-sub").textContent.split(" · ")[0]);
@@ -63,9 +68,35 @@ setTimeout(() => {
     prev = now;
   }
   out.push("largest colour step: " + Object.entries(worst).map(([k, v]) => `${k} ${v}`).join(", "));
+  // Arrows: the right sets are showing, pointing the way the air moves.
+  const groups = [...r.querySelectorAll("g[id*='-f-bd'], g[id*='-r-bd']")].filter((e) => e.style.display !== "none").map((e) => e.id.replace(/-bd\d+$/, ""));
+  out.push("arrows shown: " + groups.join(","));
   hass.states["sensor.l_in"] = S(99); c.hass = { ...hass }; // a live update during replay must not show
   out.push("live ignored: " + (el("t-l-in").textContent !== "99.0 °C"));
   hass.states["sensor.l_in"] = S(30); // back to a normal reading before going live
+  // Playing at the fastest speed, no part may change colour in a jump between frames.
+  q("speed").value = "1800"; pos.value = "0"; pos.dispatchEvent(new Event("input"));
+  await new Promise((ok) => setTimeout(ok, 1500));
+  const all = [...r.querySelectorAll("linearGradient[id^='g-']")];
+  const grab = () => all.map((g) => [...g.querySelectorAll("stop")].map((x) => rgb(getComputedStyle(x).stopColor)));
+  let before = grab(), jump = 0, where = "";
+  q("play").click();
+  for (let f = 0; f < 150; f++) {
+    await new Promise((ok) => setTimeout(ok, 16));
+    const now = grab();
+    now.forEach((g, gi) => g.forEach((c, si) => c.forEach((x, j) => {
+      const d = Math.abs(x - before[gi][si][j]);
+      if (d > jump) { jump = d; where = all[gi].id.replace(/-bd\d+$/, ""); }
+    })));
+    before = now;
+  }
+  q("play").click();
+  out.push(`playing at 1800x: largest colour step between frames ${jump} (${where})`);
+  // Eased colours settle on the readings once the timeline stops.
+  pos.value = "500"; pos.dispatchEvent(new Event("input"));
+  await new Promise((ok) => setTimeout(ok, 4000));
+  const settled = JSON.stringify(c._shown) === JSON.stringify(c._target);
+  out.push("eased colours settled: " + settled);
   q("open").click(); // back to live
   out.push("back live: sub='" + el("t-sub").textContent + "' l_in=" + el("t-l-in").textContent + " panel " + (q("panel").hidden ? "hidden" : "open"));
   setTimeout(() => {

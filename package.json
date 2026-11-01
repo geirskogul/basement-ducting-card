@@ -1,6 +1,6 @@
 {
   "name": "basement-ducting-card",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Home Assistant card: two recuperators exhausting through a hood over a heater, coloured by temperature and animated with the airflow.",
   "type": "module",
   "private": true,

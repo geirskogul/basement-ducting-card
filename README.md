@@ -2,8 +2,8 @@
 
 A Home Assistant dashboard card that draws two recuperators exhausting through a shared hood over a heater, with
 each unit supplying fresh air into the room through its own outlet. Every part that carries air is coloured by
-temperature from your sensors, and the picture moves with the airflow: streaks run up a unit's pipe, hose and the
-hood while it exhausts, and down its pipe and out of its outlet while it takes air in.
+temperature from your sensors, and the picture moves with the airflow: small arrows glide up a unit's pipe, hose and
+the hood while it exhausts, and down its pipe and out of its outlet while it takes air in.
 
 ![The card with example readings](docs/example.png)
 
@@ -64,7 +64,7 @@ each outlet one (at its end), as drawn.
 | Option | Default | What |
 | --- | --- | --- |
 | `title`, `subtitle` | `Recuperator ducting`, `live` | Text at the top of the picture. |
-| `animate` | `true` | Moving streaks and fading colour changes. `false` keeps the colours and arrows still. Browsers that ask for reduced motion get no movement either way. |
+| `animate` | `true` | Gliding airflow arrows and fading colour changes. `false` shows no airflow arrows and keeps everything still. Browsers that ask for reduced motion get no movement either way. |
 | `unit` | `auto` | `°C` (or `C`) or `°F` (or `F`) for the readings; `auto` follows Home Assistant's unit system. Sensors in °F or K are converted for the colours. |
 | `left`, `right` | | One block per unit, below. |
 | `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`) from the breathing cycles; see [Smooth changes](#smooth-changes-the-hood-without-a-sensor-and-the-hoses). |
@@ -122,8 +122,9 @@ A part with a reading at one end only takes that colour; a part with none turns 
 
 ### Smooth changes: the hood without a sensor, and the hoses
 
-Nothing in the picture changes colour in a jump. The parts drawn from a sensor follow its readings (and fade over
-2 s live); the hood without a sensor and the unit ends of the hoses follow the breathing cycles, as below. The hoses
+Nothing in the picture changes colour in a jump. The parts drawn from a sensor follow its readings: live they fade
+over 2 s, and in a replay they glide toward each moment's readings over about half a second of screen time at any
+speed (the numbers in the badges are exact); the hood without a sensor and the unit ends of the hoses follow the breathing cycles, as below. The hoses
 do this whether or not there is a hood sensor; their value per cycle is each unit's highest reading at its wye (or
 inside probe) while it exhausted.
 
