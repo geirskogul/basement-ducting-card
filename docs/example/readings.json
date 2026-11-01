@@ -1,0 +1,6 @@
+{
+  "left": { "inside": 33.4, "outside": 21.1, "supply": 26.5 },
+  "right": { "inside": 42.3, "outside": 33.5, "supply": 36.6 },
+  "heater_intake": 26.0,
+  "room": 23.1
+}

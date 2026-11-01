@@ -1,0 +1,40 @@
+name: Release
+
+# Creates a GitHub release (and its tag) whenever the version in package.json changes on main, so HACS offers
+# the update. Does nothing if that version's release already exists. The card's VERSION must match.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release the package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(jq -r .version package.json)
+          grep -q "export const VERSION = \"${version}\";" basement-ducting-card.js || { echo "VERSION in the card differs from package.json"; exit 1; }
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release if it is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes basement-ducting-card.js

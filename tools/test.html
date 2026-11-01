@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- Mock-data test: open with
+     chromium --headless=new --no-sandbox --window-size=1290,1000 --virtual-time-budget=1500 --screenshot=shot.png "file://$PWD/tools/test.html"
+     (title lists what each card animates). -->
+<html><head><meta charset="utf-8"><style>body{margin:0;background:#f5f5f5;display:flex;gap:10px}div{width:420px}</style></head><body>
+<div id="a"></div><div id="b"></div><div id="c"></div>
+<script type="module">
+import "../basement-ducting-card.js";
+const S = (v, u = "°C") => ({ state: String(v), attributes: { unit_of_measurement: u } });
+const P = (v) => ({ state: v, attributes: {} });
+const states = {
+  "sensor.l_in": S(18.4), "sensor.l_out": S(9.2), "sensor.l_phase": P("intake"),
+  "sensor.r_in": S(42.6), "sensor.r_out": S(31.0), "sensor.r_phase": P("exhaust"),
+  "sensor.l_wye": S(24.0), "sensor.r_wye": S(40.1), "sensor.l_outlet": S(15.2), "sensor.r_outlet": S(23.5),
+  "sensor.hood": S(47.0), "sensor.hood_wye": S(44.5), "sensor.heater_in": S(25.8), "sensor.room1": S(22.0), "sensor.room2": S(23.6),
+  "sensor.f_in": S(65.1, "°F"), "sensor.f_out": S(48.6, "°F"),
+};
+const hass = { states, config: { unit_system: { temperature: "°C" } } };
+const core = { left: { name: "Left", inside: "sensor.l_in", outside: "sensor.l_out", phase: "sensor.l_phase" },
+               right: { name: "Right", inside: "sensor.r_in", outside: "sensor.r_out", phase: "sensor.r_phase" } };
+const cards = [
+  ["a", { ...core, subtitle: "core sensors only" }],
+  ["b", { left: { ...core.left, wye: "sensor.l_wye", outlet: "sensor.l_outlet" }, right: { ...core.right, wye: "sensor.r_wye", outlet: "sensor.r_outlet" },
+          hood: "sensor.hood", hood_wye: "sensor.hood_wye", heater_intake: "sensor.heater_in", room: ["sensor.room1", "sensor.room2"], subtitle: "every optional sensor" }],
+  ["c", { left: { ...core.left, inside: "sensor.f_in", outside: "sensor.f_out" }, right: core.right, animate: false, unit: "°F", subtitle: "°F, no animation" }],
+];
+for (const [id, cfg] of cards) {
+  const c = document.createElement("basement-ducting-card");
+  c.setConfig(cfg); c.hass = hass; document.getElementById(id).appendChild(c);
+}
+setTimeout(() => {
+  document.title = [...document.querySelectorAll("basement-ducting-card")].map((c, i) => {
+    const r = c.shadowRoot;
+    const on = [...r.querySelectorAll(".streak.on")].map((e) => e.id.replace(/-bd\d+$/, ""));
+    const shown = [...r.querySelectorAll(".streak.on")].filter((e) => getComputedStyle(e).display !== "none").length;
+    return `${i}: on=${on.join(",")} visible=${shown} hood=${r.querySelector("[id^=t-hood-]").textContent}`;
+  }).join(" | ");
+}, 300);
+</script></body></html>

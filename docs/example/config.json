@@ -1,0 +1,9 @@
+{
+  "title": "Recuperator ducting",
+  "subtitle": "example",
+  "left": { "name": "Recuperator 1" },
+  "right": { "name": "Recuperator 2" },
+  "heater_intake": "sensor.heater_intake",
+  "room": ["sensor.room"],
+  "heater": { "name": "Heater", "intake_name": "Air intake sensor" }
+}
