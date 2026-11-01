@@ -67,7 +67,7 @@ each outlet one (at its end), as drawn.
 | `animate` | `true` | Moving streaks and fading colour changes. `false` keeps the colours and arrows still. Browsers that ask for reduced motion get no movement either way. |
 | `unit` | `auto` | `°C` (or `C`) or `°F` (or `F`) for the readings; `auto` follows Home Assistant's unit system. Sensors in °F or K are converted for the colours. |
 | `left`, `right` | | One block per unit, below. |
-| `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`) from the breathing cycles; see [The hood without a sensor](#the-hood-without-a-sensor). |
+| `hood` | | Optional sensor in the hood. Without it the hood shows the hood wye's sensor, or else an estimate (marked `*`) from the breathing cycles; see [Smooth changes](#smooth-changes-the-hood-without-a-sensor-and-the-hoses). |
 | `hood_wye` | | Optional sensor in the middle of the hood's wye. The hood then runs from `hood` at the bottom to this at the top, and the hoses start from it. |
 | `heater_intake` | | Optional sensor at the heater's air intake: the bottom of the heater's gradient (the top is the hood). Without it the room temperature is used. |
 | `room` | | Optional room sensor, or a list of them (averaged). Colours the bottom of the heater when there is no `heater_intake`, and gets its own badge. |
