@@ -7,7 +7,7 @@
 //
 // The same render function also runs in Node (tools/render.mjs) to make a static picture.
 
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
 
 // The temperature scale (°C, colour) of the recuperator integration's diagram, after the U.S. National Weather
 // Service temperature maps.
@@ -120,7 +120,8 @@ export function normalise(config) {
 // What colour and text every part gets, from the readings (°C) and phases
 
 /**
- * r: { left: {inside, outside, phase, wye, outlet}, right: {...}, hood, hood_wye, heater_intake, room, hood_estimate }
+ * r: { left: {inside, outside, phase, wye, outlet, hose}, right: {...}, hood, hood_wye, heater_intake, room, hood_estimate }
+ *    (hose, hood_estimate: smoothed cycle values, see cycleEstimate)
  * mem: remembered readings from earlier updates ({left: {exIn, ex}, right: {...}}), updated in place
  * opts: { typical: false, unit: "°C" | "°F" }
  */
@@ -158,9 +159,9 @@ export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
     const { u, m, ex, inn, wye } = state[s];
     p.grads[`g-pipe-${k}`] = [u.outside, u.inside];
     p.grads[`g-box-${k}`] = [u.inside, wye];
-    // A hose carries hood air while its unit exhausts; otherwise its dampers are shut and it keeps the last
-    // exhaust reading (or the hood's until there is one).
-    p.grads[`g-hose-${k}`] = [hoodWye, ex ? wye : known(m.ex, hoodWye)];
+    // A hose's unit end: the unit's cycle value made smooth (u.hose, see cycleEstimate), so it never jumps at a
+    // flip; without one, the live reading while the unit exhausts and the last exhaust reading while it does not.
+    p.grads[`g-hose-${k}`] = [hoodWye, known(u.hose, ex ? wye : m.ex, hoodWye)];
     // An outlet's cavity sits behind its one-way damper, open to the unit's wye: it has the wye's air whatever
     // the phase, down to its own sensor's reading at the damper if it has one.
     p.grads[`g-out-${k}`] = [wye, known(u.outlet, wye)];
@@ -176,6 +177,8 @@ export function paint(cfg, r, mem = { left: {}, right: {} }, opts = {}) {
     p.streaks[`s-pipe-${k}`] = [ex || inn, ex]; // paths run top to bottom: exhaust runs them backwards
     p.streaks[`s-hose-${k}`] = [ex, true]; // paths run unit to hood
     p.streaks[`s-out-${k}`] = [inn, false];
+    p.streaks[`s-wex-${k}`] = [ex, true]; // paths run pipe to hose: exhaust runs them backwards
+    p.streaks[`s-win-${k}`] = [inn, false];
     p.streaks[`s-arm-${k}`] = [ex, false];
     p.streaks[`drift-${k}`] = [inn, false];
   }
@@ -309,6 +312,11 @@ export function render(cfg, p, { live = false, uid = "s" } = {}) {
   // Hoses, then the streaks along the hoses, outlets and hood, then the readings on top.
   o.push(hollow(HOSE_PTS.l, "g-hose-l"), hollow(HOSE_PTS.r, "g-hose-r"));
   o.push(streak("s-hose-l", rounded(HOSE_PTS.l)), streak("s-hose-r", rounded(HOSE_PTS.r)));
+  // Through each unit's wye: an S from the pipe's inside end down to the hose (exhaust) or to the outlet (intake),
+  // leaving and entering vertically.
+  const s_ = (x0, x1) => `M ${x0},400 C ${x0},426 ${x1},424 ${x1},450`;
+  o.push(streak("s-wex-l", s_(LX, LX + HOSE_X)), streak("s-win-l", s_(LX, LX - 23)));
+  o.push(streak("s-wex-r", s_(RX, RX - HOSE_X)), streak("s-win-r", s_(RX, RX + 23)));
   o.push(streak("s-out-l", `M ${LX - 23},452 L ${LX - 23},520`), streak("s-out-r", `M ${RX + 23},452 L ${RX + 23},520`));
   o.push(streak("s-hood", `M ${CX},${HY - 4} L ${CX},${AY + 34}`));
   o.push(streak("s-arm-l", `M ${CX},${AY + 34} L ${CAP_L[0].toFixed(1)},${CAP_L[1].toFixed(1)}`));
@@ -438,47 +446,56 @@ export function valueAt(series, t) {
 }
 
 /**
- * The breathing cycles in a stretch of history and each one's peak hood temperature.
- * A cycle runs from one start of the lead unit's exhaust to the next; its peak is the highest inside-probe reading
- * of a unit while that unit exhausts (the warmest hood air the probes saw).
- * lead: phase series of the lead unit; sides: [{ phase, inside }] series per unit (inside already in °C).
- * Returns [{ start, end, peak }] for the complete cycles, oldest first.
+ * The breathing cycles in a stretch of history, with each one's peaks.
+ * A cycle runs from one start of the lead unit's exhaust to the next. Its hood peak is the highest inside-probe
+ * reading of a unit while that unit exhausts (the warmest hood air the probes saw); its peak per unit is the highest
+ * reading at that unit's end of its hose (its wye sensor, else its inside probe) while it exhausts.
+ * lead: phase series of the lead unit; sides: [{ phase, inside, air }] series per unit, in °C (air: wye or inside).
+ * Returns [{ start, end, peak, sides: [left, right] }] for the complete cycles, oldest first.
  */
 export function cyclePeaks(lead, sides) {
   const starts = [];
-  for (let i = 0; i < (lead?.length ?? 0); i++) {
-    if (lead[i][1] === "exhaust" && (i === 0 ? false : lead[i - 1][1] !== "exhaust")) starts.push(lead[i][0]);
+  for (let i = 1; i < (lead?.length ?? 0); i++) {
+    if (lead[i][1] === "exhaust" && lead[i - 1][1] !== "exhaust") starts.push(lead[i][0]);
   }
+  const highest = (series, phase, a, b) => {
+    let top = null;
+    if (!phase || !series) return top;
+    for (let i = Math.max(0, indexAt(series, a)); i < series.length && series[i][0] < b; i++) {
+      const v = series[i][1];
+      if (has(v) && valueAt(phase, Math.max(series[i][0], a)) === "exhaust" && (top === null || v > top)) top = v;
+    }
+    return top;
+  };
   const cycles = [];
   for (let k = 0; k + 1 < starts.length; k++) {
     const a = starts[k], b = starts[k + 1];
-    let peak = null;
-    for (const { phase, inside } of sides) {
-      if (!phase || !inside) continue;
-      for (let i = Math.max(0, indexAt(inside, a)); i < inside.length && inside[i][0] < b; i++) {
-        const v = inside[i][1];
-        if (has(v) && valueAt(phase, Math.max(inside[i][0], a)) === "exhaust" && (peak === null || v > peak)) peak = v;
-      }
-    }
-    if (peak !== null) cycles.push({ start: a, end: b, peak });
+    const each = sides.map(({ phase, inside, air }) => ({ hood: highest(inside, phase, a, b), hose: highest(air || inside, phase, a, b) }));
+    const peaks = each.map((x) => x.hood).filter((x) => x !== null);
+    if (peaks.length) cycles.push({ start: a, end: b, peak: Math.max(...peaks), sides: each.map((x) => x.hose) });
   }
   return cycles;
 }
 
 /**
- * The hood temperature at time t from the cycle peaks: during a complete cycle it fades from the previous cycle's
- * peak (at its start) to its own (at its end); after the last complete cycle, where the next peak is not known yet,
- * it stays at that last peak. null if there is no complete cycle at or before t.
+ * A value that changes once per cycle, made smooth: during a complete cycle it fades from the previous cycle's
+ * value (at its start) to its own (at its end), so it moves ahead of the next flip; after the last complete cycle,
+ * where the next value is not known yet, it stays at that last value. null before the first complete cycle.
+ * pick(cycle) gives the value of a cycle (default: its hood peak).
  */
-export function hoodEstimate(cycles, t) {
+export function cycleEstimate(cycles, t, pick = (c) => c.peak) {
   let k = -1;
   for (let i = 0; i < cycles.length && cycles[i].start <= t; i++) k = i;
   if (k < 0) return null;
-  const c = cycles[k];
-  if (t >= c.end) return c.peak; // no complete cycle after this one yet: hold its peak
-  const from = k > 0 ? cycles[k - 1].peak : c.peak;
-  return from + ((c.peak - from) * (t - c.start)) / (c.end - c.start);
+  const c = cycles[k], to = pick(c);
+  if (!has(to)) return null;
+  if (t >= c.end) return to; // no complete cycle after this one yet: hold its value
+  const prev = k > 0 ? pick(cycles[k - 1]) : null, from = has(prev) ? prev : to;
+  return from + ((to - from) * (t - c.start)) / (c.end - c.start);
 }
+
+/** The hood temperature at time t from the cycle peaks (see cycleEstimate). */
+export function hoodEstimate(cycles, t) { return cycleEstimate(cycles, t); }
 
 function reading(hass, entity) {
   if (!entity) return null;
@@ -515,6 +532,7 @@ function sideSeries(cfg, series, units) {
   return SIDES.map((s) => ({
     phase: series[cfg[s].phase],
     inside: (series[cfg[s].inside] || []).map(([t, v]) => [t, celsius(v, units[cfg[s].inside])]),
+    air: cfg[s].wye ? (series[cfg[s].wye] || []).map(([t, v]) => [t, celsius(v, units[cfg[s].wye])]) : null,
   }));
 }
 
@@ -584,7 +602,7 @@ class BasementDuctingCard extends BaseElement {
     if (this._built && this._seen && seen.every((x, i) => x === this._seen[i])) return;
     this._seen = seen;
     const r = readAll(hass, this._cfg);
-    r.hood_estimate = this._trackPeaks(r);
+    this._trackPeaks(r);
     const p = paint(this._cfg, r, this._mem, { unit: this._unit(hass) });
     if (!this._built) {
       this._build(p);
@@ -598,33 +616,40 @@ class BasementDuctingCard extends BaseElement {
 
   _estimating() {
     const c = this._cfg;
-    return !c.hood && !c.hood_wye && !!(c.left.phase || c.right.phase);
+    return !!(c.left.phase || c.right.phase);
   }
 
   _lead() { return this._cfg.left.phase ? "left" : "right"; }
 
+  /** Live cycle values: sets r.hood_estimate and r[side].hose from the last complete cycle. */
   _trackPeaks(r) {
     const pk = this._pk;
-    if (!pk || !this._estimating()) return null;
+    if (!pk || !this._estimating()) return;
     const lead = r[this._lead()].phase;
     if (lead === "exhaust" && pk.lead !== undefined && pk.lead !== "exhaust") {
-      if (pk.cur !== null) pk.last = pk.cur; // a new cycle: the one just ended is complete
+      // A new cycle: the one just ended is complete.
+      if (pk.cur !== null) pk.last = pk.cur;
+      SIDES.forEach((_, i) => { if (pk.sideCur[i] !== null) pk.sideLast[i] = pk.sideCur[i]; });
       pk.cur = null;
+      pk.sideCur = [null, null];
     }
     pk.lead = lead;
-    for (const s of SIDES) {
-      const v = r[s].inside;
-      if (r[s].phase === "exhaust" && has(v) && (pk.cur === null || v > pk.cur)) pk.cur = v;
-    }
-    return pk.last;
+    SIDES.forEach((s, i) => {
+      if (r[s].phase !== "exhaust") return;
+      const v = r[s].inside, air = known(r[s].wye, v);
+      if (has(v) && (pk.cur === null || v > pk.cur)) pk.cur = v;
+      if (has(air) && (pk.sideCur[i] === null || air > pk.sideCur[i])) pk.sideCur[i] = air;
+    });
+    r.hood_estimate = pk.last;
+    SIDES.forEach((s, i) => { r[s].hose = pk.sideLast[i]; });
   }
 
   /** Start the live peak tracker from the last two hours of history, so the hood is right from the first moment. */
   async _seedPeaks() {
-    this._pk = { last: null, cur: null, lead: undefined };
+    this._pk = { last: null, cur: null, lead: undefined, sideLast: [null, null], sideCur: [null, null] };
     if (!this._estimating() || !this._hass?.callWS) return;
     const c = this._cfg, pk = this._pk, end = new Date(), start = new Date(end.getTime() - 2 * 3600000);
-    const ids = SIDES.flatMap((s) => [c[s].phase, c[s].inside]).filter(Boolean);
+    const ids = SIDES.flatMap((s) => [c[s].phase, c[s].inside, c[s].wye]).filter(Boolean);
     try {
       const res = await this._hass.callWS({
         type: "history/history_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
@@ -636,13 +661,17 @@ class BasementDuctingCard extends BaseElement {
       const cycles = cyclePeaks(series[c[this._lead()].phase], sideSeries(c, series, units));
       const last = cycles[cycles.length - 1];
       pk.last = last ? last.peak : null;
-      // The cycle under way: its highest exhausting reading so far.
+      pk.sideLast = last ? [...last.sides] : [null, null];
+      // The cycle under way: its highest exhausting readings so far.
       const since = last ? last.end : start.getTime();
-      for (const { phase, inside } of sideSeries(c, series, units)) {
+      sideSeries(c, series, units).forEach(({ phase, inside, air }, i) => {
         for (const [t, v] of inside || []) {
           if (t >= since && has(v) && valueAt(phase, t) === "exhaust" && (pk.cur === null || v > pk.cur)) pk.cur = v;
         }
-      }
+        for (const [t, v] of air || inside || []) {
+          if (t >= since && has(v) && valueAt(phase, t) === "exhaust" && (pk.sideCur[i] === null || v > pk.sideCur[i])) pk.sideCur[i] = v;
+        }
+      });
       pk.lead = this._hass.states[c[this._lead()].phase]?.state;
       if (!this._rp) { this._seen = null; this.hass = this._hass; }
     } catch (err) {
@@ -782,6 +811,7 @@ class BasementDuctingCard extends BaseElement {
     const rooms = c.room.map(at).filter((x) => x !== null);
     r.room = rooms.length ? rooms.reduce((a, b) => a + b, 0) / rooms.length : null;
     r.hood_estimate = rp.cycles.length ? hoodEstimate(rp.cycles, t) : null;
+    SIDES.forEach((s, i) => { r[s].hose = rp.cycles.length ? cycleEstimate(rp.cycles, t, (cy) => cy.sides[i]) : null; });
     this._apply(paint(c, r, mem, { unit: rp.unit }));
     const when = new Date(t), span = rp.end - rp.start;
     const label = when.toLocaleString(undefined, span > 20 * 3600000

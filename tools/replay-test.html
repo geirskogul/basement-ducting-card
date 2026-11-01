@@ -50,6 +50,19 @@ setTimeout(() => {
   const hoods = [];
   for (const v of ["300", "330", "360", "390", "990", "1000"]) { pos.value = v; pos.dispatchEvent(new Event("input")); hoods.push(el("t-hood").textContent); }
   out.push("hood along the timeline: " + hoods.join(", "));
+  // No jumps: sweep the timeline in small steps and find the biggest colour step of the hoses and the hood.
+  const rgb = (c) => c.match(/\d+/g).map(Number);
+  const colourOf = (key, i) => rgb(getComputedStyle(r.querySelector(`[id^="${key}-bd"]`).querySelectorAll("stop")[i]).stopColor);
+  const worst = { "g-hose-l": 0, "g-hose-r": 0, "g-hood": 0 };
+  let prev = null;
+  for (let v = 120; v <= 980; v += 2) {
+    pos.value = String(v); pos.dispatchEvent(new Event("input"));
+    const now = Object.fromEntries(Object.keys(worst).map((k) => [k, [colourOf(k, 0), colourOf(k, 11)]]));
+    if (prev) for (const k of Object.keys(worst)) for (const e of [0, 1])
+      worst[k] = Math.max(worst[k], ...now[k][e].map((x, j) => Math.abs(x - prev[k][e][j])));
+    prev = now;
+  }
+  out.push("largest colour step: " + Object.entries(worst).map(([k, v]) => `${k} ${v}`).join(", "));
   hass.states["sensor.l_in"] = S(99); c.hass = { ...hass }; // a live update during replay must not show
   out.push("live ignored: " + (el("t-l-in").textContent !== "99.0 °C"));
   hass.states["sensor.l_in"] = S(30); // back to a normal reading before going live

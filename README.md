@@ -97,8 +97,8 @@ the speed or drag the timeline at any time; the time shown is at the top of the 
 
 The history comes straight from Home Assistant (`history/history_during_period`), so it reaches back only as far as
 the recorder keeps it (10 days by default). Long periods of sensors that report every few seconds take a moment to
-load. For an idle hose, the replay uses its unit's last exhaust before the moment shown, read from the history, so
-jumping around the timeline shows the same as playing through it.
+load. The cycle values (hood and hoses) are worked out from the history, so jumping around the timeline shows the
+same as playing through it.
 
 | Option | Default | What |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ jumping around the timeline shows the same as playing through it.
 | --- | --- |
 | Pipe (the core) | `outside` at the top to `inside` at the bottom. |
 | Unit's wye | `inside` to `wye` (or `inside` alone). |
-| Hose | Hood wye (or hood) at the hood end. The unit end: while the unit exhausts, its `wye` (or `inside`); otherwise the dampers are shut and the hose keeps that unit's last exhaust reading (the hood's until there is one). |
+| Hose | Hood wye (or hood) at the hood end. The unit end: the unit's cycle value, made smooth like the hood (see below): the highest reading at its `wye` (or `inside`) while it exhausted in each cycle. Without phase history, its live reading while it exhausts and its last exhaust reading while it does not. |
 | Outlet | The same as the bottom of the unit's wye (`wye`, or `inside`) in every phase: the outlet's cavity sits behind its one-way damper, open to the wye. With an `outlet` sensor it runs from the wye down to that reading. |
 | Hood | `hood` to `hood_wye`; with neither, the estimate below. |
 | Hood wye | `hood_wye`, else as the hood. |
@@ -120,7 +120,12 @@ jumping around the timeline shows the same as playing through it.
 
 A part with a reading at one end only takes that colour; a part with none turns grey.
 
-### The hood without a sensor
+### Smooth changes: the hood without a sensor, and the hoses
+
+Nothing in the picture changes colour in a jump. The parts drawn from a sensor follow its readings (and fade over
+2 s live); the hood without a sensor and the unit ends of the hoses follow the breathing cycles, as below. The hoses
+do this whether or not there is a hood sensor; their value per cycle is each unit's highest reading at its wye (or
+inside probe) while it exhausted.
 
 With neither `hood` nor `hood_wye`, the hood's temperature comes from the breathing cycles. A cycle runs from one
 start of the left unit's exhaust to the next (the right unit's, if the left has no `phase`); its **peak** is the

@@ -1,6 +1,6 @@
 // Checks of the colouring rules (node tools/check.mjs); run in CI.
 import assert from "node:assert/strict";
-import { normalise, paint, renderStatic, along, colour, valueAt, indexAt, celsius, cyclePeaks, hoodEstimate } from "../basement-ducting-card.js";
+import { normalise, paint, renderStatic, along, colour, valueAt, indexAt, celsius, cyclePeaks, hoodEstimate, cycleEstimate } from "../basement-ducting-card.js";
 
 const R = (left, right, extra = {}) => ({
   left: { inside: null, outside: null, phase: null, wye: null, outlet: null, ...left },
@@ -80,6 +80,14 @@ assert.ok(!renderStatic({ title: "<script>x</script>" }, {}).includes("<script>"
   assert.equal(hoodEstimate(cycles, m(16)), 40);     // a cycle starts at the previous peak...
   assert.equal(hoodEstimate(cycles, m(24)), 42);     // ...and fades to its own
   assert.equal(hoodEstimate(cycles, m(45)), 44);     // the cycle under way: hold the last known peak
+  // Each unit's hose value per cycle: its highest reading while it exhausts, smoothed the same way.
+  assert.deepEqual(cycles.map((c) => c.sides), [[30, 40], [32, 44]]);
+  assert.equal(cycleEstimate(cycles, m(24), (c) => c.sides[0]), 31);   // fading 30 -> 32 halfway
+  assert.equal(cycleEstimate(cycles, m(45), (c) => c.sides[1]), 44);   // held after the last complete cycle
+  // A smoothed hose value is used for the hose's unit end in every phase (no jump at a flip).
+  const h = paint(normalise({}), R({ inside: 16, phase: "exhaust", hose: 31 }, { inside: 40, phase: "intake", hose: 43 }, { hood_estimate: 42 }));
+  assert.deepEqual(h.grads["g-hose-l"], [42, 31]);
+  assert.deepEqual(h.grads["g-hose-r"], [42, 43]);
   // An estimate from the cycles is used before the probes' own estimate, with the * mark.
   const p = paint(normalise({}), R({ inside: 20, phase: "exhaust" }, { inside: 25, phase: "intake" }, { hood_estimate: 43 }));
   assert.equal(p.texts["t-hood"], "43.0 °C*");
